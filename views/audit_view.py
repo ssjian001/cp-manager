@@ -358,8 +358,6 @@ class AuditView(QWidget):
             return
 
         QMessageBox.information(self, "导出成功", f"审计报告已导出到:\n{path}")
-        except OSError as exc:
-            QMessageBox.critical(self, "导出失败", f"写入文件失败: {exc}")
 
     # ─────────────────────────────────────────────────────────────────────
     #  Theme refresh

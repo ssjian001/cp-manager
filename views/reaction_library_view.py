@@ -92,7 +92,7 @@ class _ReactionTemplateDialog(QDialog):
     def get_data(self) -> dict[str, str]:
         return {
             "name": self._name.text(),
-            "stop_process": self._stop_process.currentText(),
+            "stop_process": self._stop_process.text(),
             "product_disposition": self._product_disposition.text(),
             "notify_who": self._notify_who.text(),
             "recovery_condition": self._recovery_condition.text(),

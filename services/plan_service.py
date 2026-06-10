@@ -180,33 +180,6 @@ def reset_safe_launch(plan_id: int) -> bool:
         conn.close()
 
 
-def count_safe_launch_plans(project_id: int) -> int:
-    conn = db.get_connection()
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM control_plans "
-            "WHERE project_id = ? AND is_safe_launch = 1",
-            (project_id,),
-        ).fetchone()
-        return row["cnt"]
-    finally:
-        conn.close()
-
-
-def list_all_plans_with_project() -> list[dict]:
-    conn = db.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT cp.id, cp.cp_number, p.name AS project_name, cp.phase "
-            "FROM control_plans cp "
-            "LEFT JOIN projects p ON p.id = cp.project_id "
-            "ORDER BY cp.id DESC"
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
 def count_safe_launch_by_project(project_id: int) -> int:
     """Return count of active Safe Launch plans for a project."""
     conn = db.get_connection()
@@ -310,7 +283,13 @@ def derive_from_foundation(
             i = dict(item)
             new_step_id = step_id_map.get(i["step_id"])
             if new_step_id is None:
-                continue  # skip orphaned items (should not happen)
+                import logging
+                logging.warning(
+                    "derive_from_foundation: skipping orphan item id=%s "
+                    "(step_id=%s not in step_id_map)",
+                    i["id"], i["step_id"],
+                )
+                continue
             conn.execute(
                 """INSERT INTO cp_items
                       (step_id, plan_id, char_number, char_type, char_description,

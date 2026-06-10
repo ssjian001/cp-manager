@@ -328,11 +328,6 @@ class CpEditorView(QWidget):
 
         layout.addLayout(btn_layout)
 
-        # Connect signals
-        self._add_step_btn.clicked.connect(self._on_add_step)
-        self._add_item_btn.clicked.connect(self._on_add_item)
-        self._delete_btn.clicked.connect(self._on_delete)
-
     # ── Slots ──
 
     def _on_phase_clicked(self) -> None:

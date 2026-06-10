@@ -85,6 +85,7 @@ def update_project(project_id: int, **kwargs) -> bool:
 def delete_project(project_id: int) -> bool:
     conn = db.get_connection()
     try:
+        conn.execute("DELETE FROM control_plans WHERE project_id = ?", (project_id,))
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         conn.commit()
         return cur.rowcount > 0
