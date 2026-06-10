@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from views.editors.cp_item_editor import CpItemEditor
+from views.editors.plan_editor import PlanEditor
 from views.editors.step_editor import StepEditor
 
 import styles.theme as _t
@@ -281,6 +282,48 @@ class CpEditorView(QWidget):
         self._delete_btn.clicked.connect(self._on_delete)
         btn_layout.addWidget(self._delete_btn)
 
+        btn_layout.addStretch()
+
+        self._from_template_btn = QPushButton("从模板创建")
+        self._from_template_btn.setProperty("class", "action")
+        self._from_template_btn.setStyleSheet(
+            f"""
+            QPushButton[class="action"] {{
+                background: {_t.BG_INPUT};
+                color: {_t.ACCENT};
+                border: 1px solid {_t.ACCENT};
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }}
+            QPushButton[class="action"]:hover {{
+                background: {_t.BG_HOVER};
+            }}
+            """
+        )
+        self._from_template_btn.clicked.connect(self._on_from_template)
+        btn_layout.addWidget(self._from_template_btn)
+
+        self._change_log_btn = QPushButton("变更记录")
+        self._change_log_btn.setProperty("class", "action")
+        self._change_log_btn.setStyleSheet(
+            f"""
+            QPushButton[class="action"] {{
+                background: {_t.BG_INPUT};
+                color: {_t.ACCENT};
+                border: 1px solid {_t.ACCENT};
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }}
+            QPushButton[class="action"]:hover {{
+                background: {_t.BG_HOVER};
+            }}
+            """
+        )
+        self._change_log_btn.clicked.connect(self._on_change_log)
+        btn_layout.addWidget(self._change_log_btn)
+
         layout.addLayout(btn_layout)
 
         # Connect signals
@@ -515,6 +558,154 @@ class CpEditorView(QWidget):
                     cell = self._items_table.item(i, col)
                     if cell:
                         cell.setBackground(QColor(_t.YELLOW + "40"))  # light yellow
+
+    # ── Foundation Derivation & Change Log ──
+
+    def _on_from_template(self) -> None:
+        """从 Foundation 模板派生新的控制计划。"""
+        if self._current_plan_id is None:
+            QMessageBox.warning(self, "提示", "请先打开一个控制计划作为目标项目参考。")
+            return
+
+        # Get the project_id of current plan
+        import services.plan_service as plan_svc
+        plan = plan_svc.get_plan(self._current_plan_id)
+        if not plan:
+            return
+        project_id = plan["project_id"]
+
+        dlg = PlanEditor(project_id, self)
+        if dlg.exec():
+            data = dlg.get_data()
+            foundation_source_id = data.get("foundation_source_id")
+
+            if foundation_source_id is None:
+                QMessageBox.warning(self, "提示", "请选择一个 Foundation 来源模板。")
+                return
+
+            try:
+                new_plan_id = plan_svc.derive_from_foundation(
+                    foundation_plan_id=foundation_source_id,
+                    new_project_id=project_id,
+                    new_cp_number=data.get("cp_number", ""),
+                )
+
+                # Update core_team on the new plan
+                if data.get("core_team"):
+                    plan_svc.update_plan(new_plan_id, core_team=data["core_team"])
+
+                # Record change
+                import services.change_service as change_svc
+                change_svc.record_change(
+                    new_plan_id,
+                    f"从 Foundation CP #{foundation_source_id} 派生创建",
+                    changed_by="系统",
+                )
+
+                # Load the new plan
+                self.load_plan(new_plan_id)
+                QMessageBox.information(self, "成功", "已从 Foundation 模板派生创建新控制计划。")
+            except Exception as exc:
+                QMessageBox.critical(self, "错误", f"派生失败: {exc}")
+
+    def _on_change_log(self) -> None:
+        """显示变更记录对话框。"""
+        if self._current_plan_id is None:
+            QMessageBox.warning(self, "提示", "请先打开一个控制计划。")
+            return
+
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QTableWidget,
+            QTableWidgetItem,
+            QVBoxLayout,
+            QLabel,
+        )
+
+        import services.change_service as change_svc
+
+        changes = change_svc.list_changes(self._current_plan_id)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("变更记录")
+        dlg.setMinimumSize(600, 400)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        title_label = QLabel(f"变更记录 — CP #{self._current_plan_id}")
+        title_label.setStyleSheet(
+            f"font-size: 16px; font-weight: bold; color: {_t.FG_PRIMARY};"
+        )
+        layout.addWidget(title_label)
+
+        if not changes:
+            empty_label = QLabel("暂无变更记录。")
+            empty_label.setStyleSheet(f"color: {_t.FG_MUTED}; padding: 20px;")
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(empty_label, stretch=1)
+        else:
+            table = QTableWidget()
+            table.setColumnCount(3)
+            table.setHorizontalHeaderLabels(["变更时间", "描述", "操作人"])
+            table.setAlternatingRowColors(True)
+            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            table.verticalHeader().setVisible(False)
+            table.horizontalHeader().setStretchLastSection(True)
+            table.setStyleSheet(
+                f"""
+                QTableWidget {{
+                    background: {_t.BG_BASE};
+                    alternate-background-color: {_t.MANTLE};
+                    color: {_t.FG_PRIMARY};
+                    border: 1px solid {_t.BORDER};
+                    border-radius: 4px;
+                    gridline-color: {_t.BORDER_LIGHT};
+                }}
+                QHeaderView::section {{
+                    background: {_t.MANTLE};
+                    color: {_t.FG_PRIMARY};
+                    border: none;
+                    border-right: 1px solid {_t.BORDER_LIGHT};
+                    border-bottom: 1px solid {_t.BORDER_LIGHT};
+                    padding: 4px 6px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }}
+                """
+            )
+
+            for i, ch in enumerate(changes):
+                table.insertRow(i)
+                table.setItem(i, 0, QTableWidgetItem(ch.get("changed_at", "")))
+                table.setItem(i, 1, QTableWidgetItem(ch.get("description", "")))
+                table.setItem(i, 2, QTableWidgetItem(ch.get("changed_by", "")))
+
+            layout.addWidget(table, stretch=1)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(dlg.reject)
+        btn_box.setStyleSheet(
+            f"""
+            QDialogButtonBox QPushButton {{
+                background: {_t.SURFACE0};
+                color: {_t.FG_PRIMARY};
+                border: 1px solid {_t.SURFACE1};
+                border-radius: 4px;
+                padding: 6px 16px;
+                min-height: 20px;
+                min-width: 80px;
+            }}
+            QDialogButtonBox QPushButton:hover {{
+                background: {_t.SURFACE1};
+            }}
+            """
+        )
+        layout.addWidget(btn_box)
+
+        dlg.exec()
 
     # ── Theme ──
 

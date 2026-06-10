@@ -102,6 +102,7 @@ class Sidebar(QWidget):
             "Safe Launch",
             "反应计划库",
             "审计检查",
+            "评审签署",
             "设置",
         ]
         for i, text in enumerate(nav_items):

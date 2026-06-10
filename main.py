@@ -76,6 +76,7 @@ def main() -> None:
     from views.settings_view import SettingsView
     from views.reaction_library_view import ReactionLibraryView
     from views.audit_view import AuditView
+    from views.approval_view import ApprovalView
 
     window = MainWindow()
 
@@ -86,6 +87,8 @@ def main() -> None:
     reaction_lib = ReactionLibraryView()
     audit_view = AuditView()
     audit_view.refresh_plan_list()
+    approval_view = ApprovalView()
+    approval_view.refresh_plan_list()
     settings = SettingsView()
 
     window.add_page("dashboard", dashboard)
@@ -93,6 +96,7 @@ def main() -> None:
     window.add_page("safe_launch", safe_launch)
     window.add_page("reaction_library", reaction_lib)
     window.add_page("audit", audit_view)
+    window.add_page("approval", approval_view)
     window.add_page("settings", settings)
 
     # Connect dashboard double-click to navigate to CP editor
