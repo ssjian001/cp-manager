@@ -1,10 +1,31 @@
-"""Change service — CRUD for change_records."""
+"""Change record service — tracking plan changes."""
 
 import db.database as db
 
 
+def record_change(
+    plan_id: int,
+    description: str,
+    changed_by: str = "",
+) -> int:
+    """Record a change to a control plan.
+    
+    Returns the new change record id.
+    """
+    conn = db.get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO change_records (plan_id, description, changed_by) VALUES (?, ?, ?)",
+            (plan_id, description, changed_by),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
 def list_changes(plan_id: int) -> list[dict]:
-    """Return all change records for a plan, newest first."""
+    """List change records for a plan, ordered by changed_at DESC (most recent first)."""
     conn = db.get_connection()
     try:
         rows = conn.execute(
@@ -16,15 +37,22 @@ def list_changes(plan_id: int) -> list[dict]:
         conn.close()
 
 
-def record_change(plan_id: int, description: str, changed_by: str = "") -> int | None:
-    """Insert a new change record and return its id."""
+def get_change(change_id: int) -> dict | None:
     conn = db.get_connection()
     try:
-        cur = conn.execute(
-            "INSERT INTO change_records (plan_id, description, changed_by) VALUES (?, ?, ?)",
-            (plan_id, description, changed_by),
-        )
+        row = conn.execute(
+            "SELECT * FROM change_records WHERE id = ?", (change_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def delete_change(change_id: int) -> bool:
+    conn = db.get_connection()
+    try:
+        cur = conn.execute("DELETE FROM change_records WHERE id = ?", (change_id,))
         conn.commit()
-        return cur.lastrowid
+        return cur.rowcount > 0
     finally:
         conn.close()

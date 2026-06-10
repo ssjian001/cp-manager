@@ -1,14 +1,14 @@
-"""Step service — CRUD for process_steps."""
+"""Step service — CRUD and reordering for process steps."""
 
 import db.database as db
 
 
 def list_steps(plan_id: int) -> list[dict]:
+    """List all steps under a plan, ordered by sort_order."""
     conn = db.get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, plan_id, step_number, step_name, equipment, description, sort_order "
-            "FROM process_steps WHERE plan_id = ? ORDER BY sort_order",
+            "SELECT * FROM process_steps WHERE plan_id = ? ORDER BY sort_order",
             (plan_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -20,9 +20,7 @@ def get_step(step_id: int) -> dict | None:
     conn = db.get_connection()
     try:
         row = conn.execute(
-            "SELECT id, plan_id, step_number, step_name, equipment, description, sort_order "
-            "FROM process_steps WHERE id = ?",
-            (step_id,),
+            "SELECT * FROM process_steps WHERE id = ?", (step_id,)
         ).fetchone()
         return dict(row) if row else None
     finally:
@@ -36,18 +34,20 @@ def create_step(
     equipment: str = "",
     description: str = "",
 ) -> int:
+    """Create a process step with auto-incremented sort_order."""
     conn = db.get_connection()
     try:
-        # Get current max sort_order
+        # Get current max sort_order for this plan
         row = conn.execute(
-            "SELECT MAX(sort_order) FROM process_steps WHERE plan_id = ?",
+            "SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM process_steps WHERE plan_id = ?",
             (plan_id,),
         ).fetchone()
-        sort = (row[0] or 0) + 1
+        next_order = row["max_order"] + 1
+
         cur = conn.execute(
             "INSERT INTO process_steps (plan_id, step_number, step_name, equipment, description, sort_order) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (plan_id, step_number, step_name, equipment, description, sort),
+            (plan_id, step_number, step_name, equipment, description, next_order),
         )
         conn.commit()
         return cur.lastrowid
@@ -56,6 +56,7 @@ def create_step(
 
 
 def update_step(step_id: int, **kwargs) -> bool:
+    """Update fields of a process step."""
     if not kwargs:
         return False
     conn = db.get_connection()
@@ -79,7 +80,6 @@ def update_step(step_id: int, **kwargs) -> bool:
 def delete_step(step_id: int) -> bool:
     conn = db.get_connection()
     try:
-        # CASCADE will automatically delete related cp_items
         cur = conn.execute("DELETE FROM process_steps WHERE id = ?", (step_id,))
         conn.commit()
         return cur.rowcount > 0
@@ -87,15 +87,23 @@ def delete_step(step_id: int) -> bool:
         conn.close()
 
 
-def reorder_steps(step_ids: list[int]) -> None:
-    """Update sort_order sequentially based on the order of step_ids."""
+def reorder_steps(step_ids: list[int]) -> bool:
+    """Reorder steps by assigning sort_order based on position in the list.
+    
+    Args:
+        step_ids: List of step IDs in the desired order.
+    
+    Returns:
+        True if successful.
+    """
     conn = db.get_connection()
     try:
-        for idx, step_id in enumerate(step_ids):
+        for i, step_id in enumerate(step_ids):
             conn.execute(
                 "UPDATE process_steps SET sort_order = ? WHERE id = ?",
-                (idx, step_id),
+                (i, step_id),
             )
         conn.commit()
+        return True
     finally:
         conn.close()
