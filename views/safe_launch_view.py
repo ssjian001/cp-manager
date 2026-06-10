@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -132,6 +134,16 @@ class SafeLaunchView(QWidget):
 
         self._setup_ui()
         _t.theme_host.theme_changed.connect(self._on_theme_changed)
+
+        # Wire up signals
+        self._start_btn.clicked.connect(self._on_start)
+        self._complete_btn.clicked.connect(self._on_complete)
+        self._reset_btn.clicked.connect(self._on_reset)
+        self._plan_combo.currentIndexChanged.connect(self._on_plan_changed)
+
+        # Initial data load
+        self._refresh_plans()
+        self._refresh()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -327,6 +339,161 @@ class SafeLaunchView(QWidget):
 
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
+
+    # ── DB operations ──
+
+    def _refresh_plans(self) -> None:
+        """重新加载控制计划列表到 ComboBox。"""
+        self._plan_combo.blockSignals(True)
+        current = self._plan_combo.currentData()
+        self._plan_combo.clear()
+        import services.project_service as ps
+        import services.plan_service as pls
+        projects = ps.list_projects()
+        for proj in projects:
+            plans = pls.list_plans(proj["id"])
+            for plan in plans:
+                cp_number = plan['cp_number'] or f"CP-{plan['id']:04d}"
+                label = f"[{proj['name']}] {cp_number}"
+                self._plan_combo.addItem(label, plan["id"])
+        # Restore previous selection
+        if current is not None:
+            idx = self._plan_combo.findData(current)
+            if idx >= 0:
+                self._plan_combo.setCurrentIndex(idx)
+        self._plan_combo.blockSignals(False)
+
+    def _on_plan_changed(self, _index: int) -> None:
+        self._refresh()
+
+    def _on_start(self) -> None:
+        plan_id = self._plan_combo.currentData()
+        if plan_id is None:
+            QMessageBox.warning(self, "提示", "请先选择一个控制计划。")
+            return
+
+        duration, ok = QInputDialog.getInt(
+            self, "启动 Safe Launch", "持续时间（天）:", value=90, minValue=1, maxValue=365
+        )
+        if not ok:
+            return
+
+        criteria = self._exit_criteria_text.toPlainText().strip()
+
+        import services.plan_service as plan_svc
+        ok = plan_svc.start_safe_launch(plan_id, duration_days=duration, exit_criteria=criteria)
+        if ok:
+            QMessageBox.information(self, "成功", "Safe Launch 已启动。")
+            self._refresh()
+            self._refresh_plans()
+        else:
+            QMessageBox.warning(self, "失败", "启动 Safe Launch 失败。")
+
+    def _on_complete(self) -> None:
+        plan_id = self._plan_combo.currentData()
+        if plan_id is None:
+            QMessageBox.warning(self, "提示", "请先选择一个控制计划。")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认退出",
+            "确定要完成 Safe Launch 退出吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        import services.plan_service as plan_svc
+        ok = plan_svc.complete_safe_launch(plan_id)
+        if ok:
+            QMessageBox.information(self, "成功", "Safe Launch 已完成退出。")
+            self._refresh()
+            self._refresh_plans()
+        else:
+            QMessageBox.warning(self, "失败", "完成 Safe Launch 退出失败。")
+
+    def _on_reset(self) -> None:
+        plan_id = self._plan_combo.currentData()
+        if plan_id is None:
+            QMessageBox.warning(self, "提示", "请先选择一个控制计划。")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认归零",
+            "确定要归零重启 Safe Launch 吗？\n失败次数将自动 +1，计时器重新开始。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        import services.plan_service as plan_svc
+        ok = plan_svc.reset_safe_launch(plan_id)
+        if ok:
+            QMessageBox.information(self, "成功", "Safe Launch 已归零重启。")
+            self._refresh()
+            self._refresh_plans()
+        else:
+            QMessageBox.warning(self, "失败", "归零重启 Safe Launch 失败。")
+
+    def _refresh(self) -> None:
+        """刷新 Safe Launch 状态 UI。"""
+        plan_id = self._plan_combo.currentData()
+        if plan_id is None:
+            self._status_card.set_field("开始日期:", "—")
+            self._status_card.set_field("已过天数:", "—")
+            self._status_card.set_field("剩余天数:", "—")
+            self._status_card.set_field("失败次数:", "0")
+            self._status_card.set_progress(0)
+            self._exit_criteria_text.clear()
+            self._measures_table.setRowCount(0)
+            return
+
+        import services.plan_service as plan_svc
+        plan = plan_svc.get_plan(plan_id)
+        if not plan:
+            return
+
+        # Exit criteria
+        if plan.get("safe_launch_exit_criteria"):
+            self._exit_criteria_text.setPlainText(plan["safe_launch_exit_criteria"])
+
+        # Status fields
+        is_active = plan.get("is_safe_launch", 0)
+        start_str = plan.get("safe_launch_start", "")
+        end_str = plan.get("safe_launch_end", "")
+        duration_days = plan.get("safe_launch_duration_days", 90) or 90
+        fail_count = plan.get("safe_launch_fail_count", 0) or 0
+
+        if is_active and start_str:
+            try:
+                start_dt = datetime.datetime.fromisoformat(start_str)
+                now = datetime.datetime.now()
+                elapsed = (now - start_dt).days
+                remaining = max(0, duration_days - elapsed)
+                self._status_card.set_field("开始日期:", start_str[:10])
+                self._status_card.set_field("已过天数:", str(elapsed))
+                self._status_card.set_field("剩余天数:", str(remaining))
+                progress = min(100, int(elapsed / duration_days * 100)) if duration_days > 0 else 0
+                self._status_card.set_progress(progress)
+            except (ValueError, TypeError):
+                self._status_card.set_field("开始日期:", start_str[:10] if start_str else "—")
+                self._status_card.set_field("已过天数:", "—")
+                self._status_card.set_field("剩余天数:", "—")
+                self._status_card.set_progress(0)
+        elif not is_active and end_str:
+            self._status_card.set_field("开始日期:", start_str[:10] if start_str else "—")
+            self._status_card.set_field("已过天数:", "—")
+            self._status_card.set_field("剩余天数:", "已完成")
+            self._status_card.set_progress(100)
+        else:
+            self._status_card.set_field("开始日期:", "—")
+            self._status_card.set_field("已过天数:", "—")
+            self._status_card.set_field("剩余天数:", "未启动")
+            self._status_card.set_progress(0)
+        self._status_card.set_field("失败次数:", str(fail_count))
+
+        # Load enhanced measures (placeholder — currently no dedicated table, just status)
+        self._measures_table.setRowCount(0)
 
     def _on_theme_changed(self, _name: str) -> None:
         """刷新内联样式。"""

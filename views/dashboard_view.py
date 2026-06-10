@@ -5,10 +5,13 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -68,6 +71,14 @@ class DashboardView(QWidget):
 
         self._setup_ui()
         _t.theme_host.theme_changed.connect(self._on_theme_changed)
+
+        # Wire up signals
+        self._new_project_btn.clicked.connect(self._on_new_project)
+        self._project_combo.currentIndexChanged.connect(self._on_project_changed)
+
+        # Initial data load
+        self._refresh_projects()
+        self._on_refresh()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -134,11 +145,35 @@ class DashboardView(QWidget):
         layout.addLayout(cards_layout)
 
         # ── Control plan list ──
+        list_header = QHBoxLayout()
         list_label = QLabel("控制计划列表")
         list_label.setStyleSheet(
             f"font-size: 14px; font-weight: bold; color: {_t.FG_PRIMARY};"
         )
-        layout.addWidget(list_label)
+        list_header.addWidget(list_label)
+        list_header.addStretch()
+
+        self._export_excel_btn = QPushButton("导出 Excel")
+        self._export_excel_btn.setProperty("class", "action")
+        self._export_excel_btn.setStyleSheet(
+            f"""
+            QPushButton[class="action"] {{
+                background: {_t.BG_INPUT};
+                color: {_t.ACCENT};
+                border: 1px solid {_t.ACCENT};
+                border-radius: 6px;
+                padding: 4px 14px;
+                font-weight: bold;
+            }}
+            QPushButton[class="action"]:hover {{
+                background: {_t.BG_HOVER};
+            }}
+            """
+        )
+        self._export_excel_btn.clicked.connect(self._on_export_excel)
+        list_header.addWidget(self._export_excel_btn)
+
+        layout.addLayout(list_header)
 
         self._table = QTableWidget()
         self._table.setColumnCount(6)
@@ -186,6 +221,147 @@ class DashboardView(QWidget):
             plan_id = plan_id_item.data(Qt.ItemDataRole.UserRole)
             self.open_cp_editor.emit(plan_id)
 
+    # ── DB operations ──
+
+    def _on_new_project(self) -> None:
+        name, ok = QInputDialog.getText(self, "新建项目", "项目名称:")
+        if ok and name.strip():
+            import services.project_service as ps
+            ps.create_project(name.strip())
+            self._refresh_projects()
+            # Select the newly created project
+            self._project_combo.setCurrentIndex(
+                self._project_combo.findText(name.strip())
+            )
+            self._on_refresh()
+
+    def _on_project_changed(self, _index: int) -> None:
+        self._on_refresh()
+
+    def _refresh_projects(self) -> None:
+        """重新加载项目列表到 ComboBox。"""
+        self._project_combo.blockSignals(True)
+        current = self._project_combo.currentText()
+        self._project_combo.clear()
+        import services.project_service as ps
+        projects = ps.list_projects()
+        for p in projects:
+            self._project_combo.addItem(p["name"], p["id"])
+        # Restore previous selection
+        idx = self._project_combo.findText(current)
+        if idx >= 0:
+            self._project_combo.setCurrentIndex(idx)
+        self._project_combo.blockSignals(False)
+
+    def _on_refresh(self) -> None:
+        """刷新仪表盘数据：统计卡片 + 控制计划列表。"""
+        import services.project_service as ps
+        import services.plan_service as pls
+        import services.item_service as its
+        import db.database as db
+
+        # Get selected project
+        project_id = self._project_combo.currentData()
+        if project_id is None:
+            # No project selected — show empty
+            for card in self._stat_cards.values():
+                card.set_value("—")
+            self._table.setRowCount(0)
+            return
+
+        # Update stats
+        stats = ps.get_project_stats(project_id)
+        self._stat_cards["total_plans"].set_value(str(stats["plan_count"]))
+        self._stat_cards["total_items"].set_value(str(stats["item_count"]))
+
+        # Safe launch active count
+        conn = db.get_connection()
+        try:
+            sl_count = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM control_plans "
+                "WHERE project_id = ? AND is_safe_launch = 1",
+                (project_id,),
+            ).fetchone()["cnt"]
+        finally:
+            conn.close()
+        self._stat_cards["safe_launch_active"].set_value(str(sl_count))
+
+        # Special char count
+        special_count = 0
+        plans = pls.list_plans(project_id)
+        for plan in plans:
+            special_count += len(its.get_special_char_items(plan["id"]))
+        self._stat_cards["special_chars"].set_value(str(special_count))
+
+        # Load control plan table
+        self._table.setRowCount(0)
+        for i, plan in enumerate(plans):
+            self._table.insertRow(i)
+
+            cp_item = QTableWidgetItem(plan["cp_number"] or f"CP-{plan['id']:04d}")
+            cp_item.setData(Qt.ItemDataRole.UserRole, plan["id"])
+            self._table.setItem(i, 0, cp_item)
+
+            # Part number from project
+            project = ps.get_project(project_id)
+            self._table.setItem(i, 1, QTableWidgetItem(
+                project["part_number"] if project else ""
+            ))
+
+            # Phase
+            phase_map = {"prototype": "Prototype", "pre_launch": "Pre-Launch", "production": "Production"}
+            phase_val = plan.get("phase", "") or ""
+            self._table.setItem(i, 2, QTableWidgetItem(
+                phase_map.get(phase_val, phase_val)
+            ))
+
+            # Status
+            status_map = {"draft": "草稿", "review": "审核中", "approved": "已批准", "obsolete": "已废弃"}
+            status_val = plan.get("status", "") or ""
+            self._table.setItem(i, 3, QTableWidgetItem(
+                status_map.get(status_val, status_val)
+            ))
+
+            # Safe Launch
+            sl_text = "是" if plan["is_safe_launch"] else "—"
+            self._table.setItem(i, 4, QTableWidgetItem(sl_text))
+
+            # Created date
+            created = plan["created_at"] or ""
+            self._table.setItem(i, 5, QTableWidgetItem(created))
+
+    def _on_export_excel(self) -> None:
+        """导出当前选中的控制计划为 Excel。"""
+        row = self._table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一个控制计划")
+            return
+        plan_id_item = self._table.item(row, 0)
+        if plan_id_item is None or plan_id_item.data(Qt.ItemDataRole.UserRole) is None:
+            QMessageBox.information(self, "提示", "请先选择一个控制计划")
+            return
+        plan_id = plan_id_item.data(Qt.ItemDataRole.UserRole)
+
+        from export.excel_export import export_control_plan
+
+        # Build default filename
+        plan_number = plan_id_item.text()
+        default_name = f"CP_{plan_number}.xlsx"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出控制计划", default_name, "Excel Files (*.xlsx)"
+        )
+        if not path:
+            return
+
+        try:
+            export_control_plan(plan_id, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+
+        QMessageBox.information(self, "导出成功", f"控制计划已导出到:\n{path}")
+
     def _on_theme_changed(self, _name: str) -> None:
         """刷新所有内联样式。"""
         title_item = self.layout().itemAt(0)
@@ -231,11 +407,30 @@ class DashboardView(QWidget):
         for card in self._stat_cards.values():
             card.refresh_style()
 
-        # List label
-        list_label_item = self.layout().itemAt(3)
-        if list_label_item and list_label_item.widget():
-            list_label_item.widget().setStyleSheet(
-                f"font-size: 14px; font-weight: bold; color: {_t.FG_PRIMARY};"
+        # List label / export button
+        list_header_item = self.layout().itemAt(3)
+        if list_header_item and list_header_item.layout():
+            hlayout = list_header_item.layout()
+            label_w = hlayout.itemAt(0)
+            if label_w and label_w.widget():
+                label_w.widget().setStyleSheet(
+                    f"font-size: 14px; font-weight: bold; color: {_t.FG_PRIMARY};"
+                )
+            # Export Excel button
+            self._export_excel_btn.setStyleSheet(
+                f"""
+                QPushButton[class="action"] {{
+                    background: {_t.BG_INPUT};
+                    color: {_t.ACCENT};
+                    border: 1px solid {_t.ACCENT};
+                    border-radius: 6px;
+                    padding: 4px 14px;
+                    font-weight: bold;
+                }}
+                QPushButton[class="action"]:hover {{
+                    background: {_t.BG_HOVER};
+                }}
+                """
             )
 
         # Table

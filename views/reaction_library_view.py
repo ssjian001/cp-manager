@@ -52,8 +52,7 @@ class _ReactionTemplateDialog(QDialog):
         self._name = QLineEdit()
         form.addRow("模板名:", self._name)
 
-        self._stop_process = QComboBox()
-        self._stop_process.addItems(["是", "否"])
+        self._stop_process = QLineEdit()
         form.addRow("停线决策:", self._stop_process)
 
         self._product_disposition = QLineEdit()
@@ -103,9 +102,7 @@ class _ReactionTemplateDialog(QDialog):
         if "name" in data:
             self._name.setText(data["name"])
         if "stop_process" in data:
-            idx = self._stop_process.findText(data["stop_process"])
-            if idx >= 0:
-                self._stop_process.setCurrentIndex(idx)
+            self._stop_process.setText(data["stop_process"])
         if "product_disposition" in data:
             self._product_disposition.setText(data["product_disposition"])
         if "notify_who" in data:
@@ -141,6 +138,9 @@ class ReactionLibraryView(QWidget):
 
         self._setup_ui()
         _t.theme_host.theme_changed.connect(self._on_theme_changed)
+
+        # Load data from DB
+        self._refresh_table()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -278,23 +278,47 @@ class ReactionLibraryView(QWidget):
         )
         layout.addWidget(self._table, stretch=1)
 
+    # ─────────────────────────────────────────────────────────────────────
+    #  DB operations
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _refresh_table(self) -> None:
+        """从数据库重新加载所有模板到表格。"""
+        import services.reaction_service as rs
+
+        templates = rs.list_templates()
+        self._table.setRowCount(len(templates))
+        for row, tpl in enumerate(templates):
+            name_item = QTableWidgetItem(tpl["name"])
+            name_item.setData(Qt.ItemDataRole.UserRole, tpl["id"])
+            self._table.setItem(row, 0, name_item)
+            self._table.setItem(row, 1, QTableWidgetItem(tpl.get("stop_process", "")))
+            self._table.setItem(row, 2, QTableWidgetItem(tpl.get("product_disposition", "")))
+            self._table.setItem(row, 3, QTableWidgetItem(tpl.get("notify_who", "")))
+            self._table.setItem(row, 4, QTableWidgetItem(tpl.get("recovery_condition", "")))
+            is_default = "是" if tpl.get("is_default") else "否"
+            self._table.setItem(row, 5, QTableWidgetItem(is_default))
+
     def _on_add(self) -> None:
         dlg = _ReactionTemplateDialog(self)
         if dlg.exec():
             data = dlg.get_data()
-            row = self._table.rowCount()
-            self._table.insertRow(row)
-            for col, key in enumerate(["name", "stop_process", "product_disposition",
-                                       "notify_who", "recovery_condition"]):
-                item = QTableWidgetItem(data.get(key, ""))
-                self._table.setItem(row, col, item)
-            # "是否默认" column
-            item = QTableWidgetItem("否")
-            self._table.setItem(row, 5, item)
+            import services.reaction_service as rs
+            rs.create_template(
+                name=data["name"],
+                stop_process=data["stop_process"],
+                product_disposition=data["product_disposition"],
+                notify_who=data["notify_who"],
+                recovery_condition=data["recovery_condition"],
+            )
+            self._refresh_table()
 
     def _on_edit(self) -> None:
         row = self._table.currentRow()
         if row < 0:
+            return
+        tpl_id = self._table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if tpl_id is None:
             return
         data = {
             "name": self._table.item(row, 0).text() if self._table.item(row, 0) else "",
@@ -307,28 +331,43 @@ class ReactionLibraryView(QWidget):
         dlg.set_data(data)
         if dlg.exec():
             new_data = dlg.get_data()
-            for col, key in enumerate(["name", "stop_process", "product_disposition",
-                                       "notify_who", "recovery_condition"]):
-                item = QTableWidgetItem(new_data.get(key, ""))
-                self._table.setItem(row, col, item)
+            import services.reaction_service as rs
+            rs.update_template(
+                tpl_id,
+                name=new_data["name"],
+                stop_process=new_data["stop_process"],
+                product_disposition=new_data["product_disposition"],
+                notify_who=new_data["notify_who"],
+                recovery_condition=new_data["recovery_condition"],
+            )
+            self._refresh_table()
 
     def _on_delete(self) -> None:
         row = self._table.currentRow()
-        if row >= 0:
-            self._table.removeRow(row)
+        if row < 0:
+            return
+        tpl_id = self._table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if tpl_id is None:
+            return
+        import services.reaction_service as rs
+        rs.delete_template(tpl_id)
+        self._refresh_table()
 
     def _on_set_default(self) -> None:
         row = self._table.currentRow()
         if row < 0:
             return
-        # Clear all "是否默认" to "否"
-        for r in range(self._table.rowCount()):
-            item = self._table.item(r, 5)
-            if item:
-                item.setText("否")
-        # Set current row to "是"
-        item = QTableWidgetItem("是")
-        self._table.setItem(row, 5, item)
+        tpl_id = self._table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if tpl_id is None:
+            return
+        import services.reaction_service as rs
+        # Clear all defaults
+        for tpl in rs.list_templates():
+            if tpl["is_default"]:
+                rs.update_template(tpl["id"], is_default=0)
+        # Set current as default
+        rs.update_template(tpl_id, is_default=1)
+        self._refresh_table()
 
     def _on_theme_changed(self, _name: str) -> None:
         """刷新内联样式。"""

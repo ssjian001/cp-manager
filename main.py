@@ -49,6 +49,10 @@ def main() -> None:
     import db.database as db
     db.init_db()
 
+    # 5b. 确保预设反应计划模板存在
+    from core.presets import ensure_reaction_templates
+    ensure_reaction_templates()
+
     # 6. 读取持久化的主题名称
     from styles.theme import set_theme, get_stylesheet, apply_palette
     theme_name = db.read_setting("theme") or "light"

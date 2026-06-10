@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from views.editors.cp_item_editor import CpItemEditor
+from views.editors.step_editor import StepEditor
 
 import styles.theme as _t
 
@@ -293,6 +296,12 @@ class CpEditorView(QWidget):
             return
         for b in self._phase_buttons:
             b.setChecked(b is btn)
+        # Update DB
+        if self._current_plan_id is not None:
+            import services.plan_service as plan_svc
+            idx = self._phase_buttons.index(btn)
+            phase_key = ["prototype", "pre_launch", "production"][idx]
+            plan_svc.update_plan(self._current_plan_id, phase=phase_key)
 
     def _on_step_changed(self, row: int) -> None:
         if row >= 0:
@@ -301,47 +310,211 @@ class CpEditorView(QWidget):
                 self._current_step_id = item.data(Qt.ItemDataRole.UserRole)
         else:
             self._current_step_id = None
+        # Refresh items — only show items for the selected step
+        self._refresh_items()
 
     def _on_add_step(self) -> None:
-        # Placeholder — will be wired to DB service later
-        from PySide6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(self, "添加过程步骤", "步骤名称:")
-        if ok and text:
+        if self._current_plan_id is None:
+            QMessageBox.warning(self, "提示", "请先打开一个控制计划。")
+            return
+        dlg = StepEditor(self)
+        if dlg.exec():
+            data = dlg.get_data()
+            step_number = data.get("step_number", "").strip()
+            step_name = data.get("step_name", "").strip()
+            if not step_number or not step_name:
+                QMessageBox.warning(self, "提示", "步骤编号和名称不能为空。")
+                return
+            equipment = data.get("equipment", "")
+            import db.database as db
+            conn = db.get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT MAX(sort_order) FROM process_steps WHERE plan_id=?",
+                    (self._current_plan_id,),
+                ).fetchone()
+                sort = (row[0] or 0) + 1
+                cur = conn.execute(
+                    "INSERT INTO process_steps (plan_id, step_number, step_name, equipment, sort_order) VALUES (?,?,?,?,?)",
+                    (self._current_plan_id, step_number, step_name, equipment, sort),
+                )
+                conn.commit()
+                new_id = cur.lastrowid
+            finally:
+                conn.close()
+            text = f"{step_number} - {step_name}"
             item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, -1)  # temp id
+            item.setData(Qt.ItemDataRole.UserRole, new_id)
             self._step_list.addItem(item)
+            # Select the new step
+            self._step_list.setCurrentItem(item)
 
     def _on_add_item(self) -> None:
         if self._current_step_id is None:
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "提示", "请先选择一个过程步骤。")
             return
         dlg = CpItemEditor(self)
         if dlg.exec():
             data = dlg.get_data()
-            # Placeholder: append to table
-            row = self._items_table.rowCount()
-            self._items_table.insertRow(row)
-            for col, key in enumerate([
-                "char_number", "char_description", "special_classification",
-                "specification", "measurement_method", "sample_size",
-                "sample_frequency", "control_method_type", "responsible",
-                "reaction_plan",
-            ]):
-                val = data.get(key, "")
-                item = QTableWidgetItem(str(val))
-                self._items_table.setItem(row, col + 2, item)
+            import services.item_service as item_svc
+            item_id = item_svc.create_item(
+                step_id=self._current_step_id,
+                plan_id=self._current_plan_id,
+                **data,
+            )
+            # Refresh the table
+            self._refresh_items()
 
     def _on_delete(self) -> None:
-        # Placeholder
-        pass
+        # If table has selected rows → delete items
+        selected_rows = self._items_table.selectionModel().selectedRows()
+        if selected_rows:
+            reply = QMessageBox.question(
+                self, "确认删除", "确定要删除选中的控制项吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            import services.item_service as item_svc
+            for idx in sorted([r.row() for r in selected_rows], reverse=True):
+                item = self._items_table.item(idx, 2)  # char_number column
+                if item and item.data(Qt.ItemDataRole.UserRole) is not None:
+                    item_id = item.data(Qt.ItemDataRole.UserRole)
+                    item_svc.delete_item(item_id)
+            self._refresh_items()
+            return
+
+        # No table selection → delete selected process step
+        current_step_item = self._step_list.currentItem()
+        if current_step_item is None:
+            QMessageBox.warning(self, "提示", "请选择要删除的过程步骤或控制项。")
+            return
+
+        step_id = current_step_item.data(Qt.ItemDataRole.UserRole)
+        if step_id is None:
+            return
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除步骤 \"{current_step_item.text()}\" 及其所有控制项吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        import services.step_service as step_svc
+        step_svc.delete_step(step_id)
+        row = self._step_list.currentRow()
+        self._step_list.takeItem(row)
+        self._current_step_id = None
+        self._refresh_items()
 
     # ── Public API ──
 
     def load_plan(self, plan_id: int) -> None:
         """加载指定控制计划到编辑器。"""
         self._current_plan_id = plan_id
-        self._cp_info_label.setText(f"CP编号: CP-{plan_id:04d}  版本: 1.0")
+        self._current_step_id = None
+
+        import services.plan_service as plan_svc
+        import db.database as db
+
+        plan = plan_svc.get_plan(plan_id)
+        if not plan:
+            self._cp_info_label.setText("CP编号: —  状态: —")
+            self._step_list.clear()
+            self._items_table.setRowCount(0)
+            return
+
+        # Update phase buttons
+        phase_map = {"prototype": 0, "pre_launch": 1, "production": 2}
+        idx = phase_map.get(plan["phase"], 0)
+        for i, btn in enumerate(self._phase_buttons):
+            btn.setChecked(i == idx)
+
+        # Update CP info
+        self._cp_info_label.setText(
+            f"CP编号: {plan['cp_number'] or '—'}  状态: {plan['status']}"
+        )
+
+        # Load process steps
+        self._step_list.clear()
+        conn = db.get_connection()
+        try:
+            steps = conn.execute(
+                "SELECT id, step_number, step_name FROM process_steps WHERE plan_id=? ORDER BY sort_order",
+                (plan_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        for step in steps:
+            text = f"{step['step_number']} - {step['step_name']}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, step["id"])
+            self._step_list.addItem(item)
+
+        # Select the first step
+        if self._step_list.count() > 0:
+            self._step_list.setCurrentRow(0)
+
+        # Load all control items
+        self._refresh_items()
+
+    def _refresh_items(self) -> None:
+        """刷新控制项目表格。"""
+        self._items_table.setRowCount(0)
+        if self._current_plan_id is None:
+            return
+        import services.item_service as item_svc
+        import db.database as db
+
+        # If a step is selected, only show items for that step
+        if self._current_step_id is not None:
+            items = item_svc.list_items_by_step(self._current_step_id)
+        else:
+            items = item_svc.list_items(self._current_plan_id)
+
+        # Get step map for display
+        conn = db.get_connection()
+        try:
+            steps = {
+                r["id"]: r
+                for r in conn.execute(
+                    "SELECT id, step_number, step_name FROM process_steps WHERE plan_id=?",
+                    (self._current_plan_id,),
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        for i, item_data in enumerate(items):
+            self._items_table.insertRow(i)
+            step = steps.get(item_data["step_id"], {})
+
+            # Col 0-1: process info
+            step_num_item = QTableWidgetItem(step.get("step_number", ""))
+            step_num_item.setData(Qt.ItemDataRole.UserRole, item_data["id"])
+            self._items_table.setItem(i, 0, step_num_item)
+            self._items_table.setItem(i, 1, QTableWidgetItem(step.get("step_name", "")))
+
+            # Col 2-11: control item fields
+            fields = [
+                "char_number", "char_description", "special_classification",
+                "specification", "measurement_method", "sample_size",
+                "sample_frequency", "control_method_type", "responsible", "reaction_plan",
+            ]
+            for col, key in enumerate(fields):
+                val = item_data.get(key, "") or ""
+                cell = QTableWidgetItem(str(val))
+                cell.setData(Qt.ItemDataRole.UserRole, item_data["id"])
+                self._items_table.setItem(i, col + 2, cell)
+
+            # Special characteristic row highlight
+            if item_data.get("special_classification", "none") != "none":
+                for col in range(12):
+                    cell = self._items_table.item(i, col)
+                    if cell:
+                        cell.setBackground(QColor(_t.YELLOW + "40"))  # light yellow
 
     # ── Theme ──
 

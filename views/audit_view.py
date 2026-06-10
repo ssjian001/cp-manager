@@ -335,10 +335,9 @@ class AuditView(QWidget):
 
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
-            writer.writerow(["ID", "类别", "检查项", "结果", "详情"])
+            writer.writerow(["类别", "检查项", "结果", "详情"])
             for r in self._results:
                 writer.writerow([
-                    r.get("id", ""),
                     r.get("category", ""),
                     r.get("check", ""),
                     r.get("result", ""),
