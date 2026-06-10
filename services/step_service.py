@@ -87,6 +87,19 @@ def delete_step(step_id: int) -> bool:
         conn.close()
 
 
+def get_step_map_by_plan(plan_id: int) -> dict[int, dict]:
+    """Return {step_id: {id, step_number, step_name}} for all steps in a plan."""
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, step_number, step_name FROM process_steps WHERE plan_id=?",
+            (plan_id,),
+        ).fetchall()
+        return {r["id"]: dict(r) for r in rows}
+    finally:
+        conn.close()
+
+
 def reorder_steps(step_ids: list[int]) -> bool:
     """Reorder steps by assigning sort_order based on position in the list.
     

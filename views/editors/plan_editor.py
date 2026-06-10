@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import db.database as db
 import styles.theme as _t
 
 
@@ -134,15 +133,12 @@ class PlanEditor(QDialog):
 
     def _load_project_info(self) -> None:
         """从 projects 表读取项目信息并填充字段。"""
-        conn = db.get_connection()
-        try:
-            project = conn.execute(
-                "SELECT * FROM projects WHERE id = ?",
-                (self._project_id,),
-            ).fetchone()
-        finally:
-            conn.close()
+        import services.project_service as ps
 
+        try:
+            project = ps.get_project(self._project_id)
+        except Exception:
+            return
         if not project:
             return
 
@@ -161,15 +157,12 @@ class PlanEditor(QDialog):
 
     def _load_foundation_sources(self) -> None:
         """加载可用的 Foundation 控制计划（同项目下已有的计划）。"""
-        conn = db.get_connection()
+        import services.plan_service as plan_svc
+
         try:
-            plans = conn.execute(
-                "SELECT id, cp_number, phase FROM control_plans "
-                "WHERE project_id = ? ORDER BY created_at DESC",
-                (self._project_id,),
-            ).fetchall()
-        finally:
-            conn.close()
+            plans = plan_svc.list_plans_for_foundation(self._project_id)
+        except Exception:
+            plans = []
 
         for plan in plans:
             cp_label = plan['cp_number'] or f"CP-{plan['id']:04d}"

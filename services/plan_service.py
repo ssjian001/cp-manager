@@ -180,6 +180,76 @@ def reset_safe_launch(plan_id: int) -> bool:
         conn.close()
 
 
+def count_safe_launch_plans(project_id: int) -> int:
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM control_plans "
+            "WHERE project_id = ? AND is_safe_launch = 1",
+            (project_id,),
+        ).fetchone()
+        return row["cnt"]
+    finally:
+        conn.close()
+
+
+def list_all_plans_with_project() -> list[dict]:
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT cp.id, cp.cp_number, p.name AS project_name, cp.phase "
+            "FROM control_plans cp "
+            "LEFT JOIN projects p ON p.id = cp.project_id "
+            "ORDER BY cp.id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def count_safe_launch_by_project(project_id: int) -> int:
+    """Return count of active Safe Launch plans for a project."""
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM control_plans "
+            "WHERE project_id = ? AND is_safe_launch = 1",
+            (project_id,),
+        ).fetchone()
+        return row["cnt"]
+    finally:
+        conn.close()
+
+
+def get_plan_list_all() -> list[dict]:
+    """Return all plans with project name (for audit view combo box)."""
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT cp.id, cp.cp_number, p.name AS project_name, cp.phase "
+            "FROM control_plans cp "
+            "LEFT JOIN projects p ON p.id = cp.project_id "
+            "ORDER BY cp.id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_plans_for_foundation(project_id: int) -> list[dict]:
+    """Return plans for a project (for foundation source selector)."""
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, cp_number, phase FROM control_plans "
+            "WHERE project_id = ? ORDER BY created_at DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def derive_from_foundation(
     foundation_plan_id: int,
     new_project_id: int,

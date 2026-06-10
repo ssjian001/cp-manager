@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -10,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -205,19 +208,16 @@ class AuditView(QWidget):
 
     def _refresh_plan_list(self) -> None:
         """从数据库加载所有控制计划到 ComboBox。"""
-        import db.database as db
+        import services.plan_service as plan_svc
 
         self._plan_combo.clear()
-        conn = db.get_connection()
         try:
-            rows = conn.execute(
-                "SELECT cp.id, cp.cp_number, p.name AS project_name, cp.phase "
-                "FROM control_plans cp "
-                "LEFT JOIN projects p ON p.id = cp.project_id "
-                "ORDER BY cp.id DESC"
-            ).fetchall()
-        finally:
-            conn.close()
+            rows = plan_svc.get_plan_list_all()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"加载控制计划列表失败: {exc}")
+            return
 
         for row in rows:
             label = f"[#{row['id']}] {row['cp_number'] or '(无编号)'} — {row['project_name'] or '?'} ({row['phase']})"
@@ -239,6 +239,13 @@ class AuditView(QWidget):
             item = QTableWidgetItem(str(exc))
             item.setForeground(Qt.GlobalColor.red)
             self._table.setItem(0, 0, item)
+            self._update_stats()
+            return
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self._results = []
+            QMessageBox.critical(self, "错误", f"审计执行失败: {exc}")
             self._update_stats()
             return
 
@@ -333,16 +340,26 @@ class AuditView(QWidget):
 
         import csv
 
-        with open(path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            writer.writerow(["类别", "检查项", "结果", "详情"])
-            for r in self._results:
-                writer.writerow([
-                    r.get("category", ""),
-                    r.get("check", ""),
-                    r.get("result", ""),
-                    r.get("detail", ""),
-                ])
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(["类别", "检查项", "结果", "详情"])
+                for r in self._results:
+                    writer.writerow([
+                        r.get("category", ""),
+                        r.get("check", ""),
+                        r.get("result", ""),
+                        r.get("detail", ""),
+                    ])
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"导出失败: {exc}")
+            return
+
+        QMessageBox.information(self, "导出成功", f"审计报告已导出到:\n{path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "导出失败", f"写入文件失败: {exc}")
 
     # ─────────────────────────────────────────────────────────────────────
     #  Theme refresh

@@ -226,8 +226,14 @@ class DashboardView(QWidget):
     def _on_new_project(self) -> None:
         name, ok = QInputDialog.getText(self, "新建项目", "项目名称:")
         if ok and name.strip():
-            import services.project_service as ps
-            ps.create_project(name.strip())
+            try:
+                import services.project_service as ps
+                ps.create_project(name.strip())
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "错误", f"创建项目失败: {exc}")
+                return
             self._refresh_projects()
             # Select the newly created project
             self._project_combo.setCurrentIndex(
@@ -258,7 +264,6 @@ class DashboardView(QWidget):
         import services.project_service as ps
         import services.plan_service as pls
         import services.item_service as its
-        import db.database as db
 
         # Get selected project
         project_id = self._project_combo.currentData()
@@ -269,29 +274,27 @@ class DashboardView(QWidget):
             self._table.setRowCount(0)
             return
 
-        # Update stats
-        stats = ps.get_project_stats(project_id)
-        self._stat_cards["total_plans"].set_value(str(stats["plan_count"]))
-        self._stat_cards["total_items"].set_value(str(stats["item_count"]))
-
-        # Safe launch active count
-        conn = db.get_connection()
         try:
-            sl_count = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM control_plans "
-                "WHERE project_id = ? AND is_safe_launch = 1",
-                (project_id,),
-            ).fetchone()["cnt"]
-        finally:
-            conn.close()
-        self._stat_cards["safe_launch_active"].set_value(str(sl_count))
+            # Update stats
+            stats = ps.get_project_stats(project_id)
+            self._stat_cards["total_plans"].set_value(str(stats["plan_count"]))
+            self._stat_cards["total_items"].set_value(str(stats["item_count"]))
 
-        # Special char count
-        special_count = 0
-        plans = pls.list_plans(project_id)
-        for plan in plans:
-            special_count += len(its.get_special_char_items(plan["id"]))
-        self._stat_cards["special_chars"].set_value(str(special_count))
+            # Safe launch active count
+            sl_count = pls.count_safe_launch_by_project(project_id)
+            self._stat_cards["safe_launch_active"].set_value(str(sl_count))
+
+            # Special char count
+            special_count = 0
+            plans = pls.list_plans(project_id)
+            for plan in plans:
+                special_count += len(its.get_special_char_items(plan["id"]))
+            self._stat_cards["special_chars"].set_value(str(special_count))
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"加载统计数据失败: {exc}")
+            return
 
         # Load control plan table
         self._table.setRowCount(0)

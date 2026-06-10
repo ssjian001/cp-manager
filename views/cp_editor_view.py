@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -369,22 +371,19 @@ class CpEditorView(QWidget):
                 QMessageBox.warning(self, "提示", "步骤编号和名称不能为空。")
                 return
             equipment = data.get("equipment", "")
-            import db.database as db
-            conn = db.get_connection()
             try:
-                row = conn.execute(
-                    "SELECT MAX(sort_order) FROM process_steps WHERE plan_id=?",
-                    (self._current_plan_id,),
-                ).fetchone()
-                sort = (row[0] or 0) + 1
-                cur = conn.execute(
-                    "INSERT INTO process_steps (plan_id, step_number, step_name, equipment, sort_order) VALUES (?,?,?,?,?)",
-                    (self._current_plan_id, step_number, step_name, equipment, sort),
+                import services.step_service as step_svc
+                new_id = step_svc.create_step(
+                    plan_id=self._current_plan_id,
+                    step_number=step_number,
+                    step_name=step_name,
+                    equipment=equipment,
                 )
-                conn.commit()
-                new_id = cur.lastrowid
-            finally:
-                conn.close()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "错误", f"添加步骤失败: {exc}")
+                return
             text = f"{step_number} - {step_name}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, new_id)
@@ -399,12 +398,18 @@ class CpEditorView(QWidget):
         dlg = CpItemEditor(self)
         if dlg.exec():
             data = dlg.get_data()
-            import services.item_service as item_svc
-            item_id = item_svc.create_item(
-                step_id=self._current_step_id,
-                plan_id=self._current_plan_id,
-                **data,
-            )
+            try:
+                import services.item_service as item_svc
+                item_svc.create_item(
+                    step_id=self._current_step_id,
+                    plan_id=self._current_plan_id,
+                    **data,
+                )
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "错误", f"添加控制项失败: {exc}")
+                return
             # Refresh the table
             self._refresh_items()
 
@@ -418,12 +423,18 @@ class CpEditorView(QWidget):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-            import services.item_service as item_svc
-            for idx in sorted([r.row() for r in selected_rows], reverse=True):
-                item = self._items_table.item(idx, 2)  # char_number column
-                if item and item.data(Qt.ItemDataRole.UserRole) is not None:
-                    item_id = item.data(Qt.ItemDataRole.UserRole)
-                    item_svc.delete_item(item_id)
+            try:
+                import services.item_service as item_svc
+                for idx in sorted([r.row() for r in selected_rows], reverse=True):
+                    item = self._items_table.item(idx, 2)  # char_number column
+                    if item and item.data(Qt.ItemDataRole.UserRole) is not None:
+                        item_id = item.data(Qt.ItemDataRole.UserRole)
+                        item_svc.delete_item(item_id)
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "错误", f"删除控制项失败: {exc}")
+                return
             self._refresh_items()
             return
 
@@ -445,8 +456,14 @@ class CpEditorView(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        import services.step_service as step_svc
-        step_svc.delete_step(step_id)
+        try:
+            import services.step_service as step_svc
+            step_svc.delete_step(step_id)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"删除步骤失败: {exc}")
+            return
         row = self._step_list.currentRow()
         self._step_list.takeItem(row)
         self._current_step_id = None
@@ -460,7 +477,6 @@ class CpEditorView(QWidget):
         self._current_step_id = None
 
         import services.plan_service as plan_svc
-        import db.database as db
 
         plan = plan_svc.get_plan(plan_id)
         if not plan:
@@ -482,14 +498,8 @@ class CpEditorView(QWidget):
 
         # Load process steps
         self._step_list.clear()
-        conn = db.get_connection()
-        try:
-            steps = conn.execute(
-                "SELECT id, step_number, step_name FROM process_steps WHERE plan_id=? ORDER BY sort_order",
-                (plan_id,),
-            ).fetchall()
-        finally:
-            conn.close()
+        import services.step_service as step_svc
+        steps = step_svc.list_steps(plan_id)
         for step in steps:
             text = f"{step['step_number']} - {step['step_name']}"
             item = QListWidgetItem(text)
@@ -509,7 +519,7 @@ class CpEditorView(QWidget):
         if self._current_plan_id is None:
             return
         import services.item_service as item_svc
-        import db.database as db
+        import services.step_service as step_svc
 
         # If a step is selected, only show items for that step
         if self._current_step_id is not None:
@@ -518,17 +528,7 @@ class CpEditorView(QWidget):
             items = item_svc.list_items(self._current_plan_id)
 
         # Get step map for display
-        conn = db.get_connection()
-        try:
-            steps = {
-                r["id"]: r
-                for r in conn.execute(
-                    "SELECT id, step_number, step_name FROM process_steps WHERE plan_id=?",
-                    (self._current_plan_id,),
-                ).fetchall()
-            }
-        finally:
-            conn.close()
+        steps = step_svc.get_step_map_by_plan(self._current_plan_id)
 
         for i, item_data in enumerate(items):
             self._items_table.insertRow(i)
@@ -605,7 +605,7 @@ class CpEditorView(QWidget):
                 # Load the new plan
                 self.load_plan(new_plan_id)
                 QMessageBox.information(self, "成功", "已从 Foundation 模板派生创建新控制计划。")
-            except Exception as exc:
+            except (ValueError, sqlite3.Error) as exc:
                 QMessageBox.critical(self, "错误", f"派生失败: {exc}")
 
     def _on_change_log(self) -> None:

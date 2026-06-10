@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import db.database as db
 import services.approval_service as approval_svc
 import services.plan_service as plan_svc
 import styles.theme as _t
