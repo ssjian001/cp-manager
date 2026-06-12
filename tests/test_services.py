@@ -461,6 +461,74 @@ class TestReactionService:
         assert ok is True
         assert rs.list_templates() == []
 
+    def test_update_template_name(self, db_path):
+        """更新模板名称"""
+        tid = rs.create_template(name="Original", stop_process="Stop line")
+        ok = rs.update_template(tid, name="Updated")
+        assert ok is True
+        tpl = rs.get_template(tid)
+        assert tpl["name"] == "Updated"
+        assert tpl["stop_process"] == "Stop line"  # unchanged
+
+    def test_update_template_all_fields(self, db_path):
+        """更新所有字段"""
+        tid = rs.create_template(name="Old")
+        ok = rs.update_template(
+            tid,
+            name="New",
+            stop_process="Stop",
+            product_disposition="Sort",
+            notify_who="QA",
+            recovery_condition="OK",
+            is_default=1,
+        )
+        assert ok is True
+        tpl = rs.get_template(tid)
+        assert tpl["name"] == "New"
+        assert tpl["stop_process"] == "Stop"
+        assert tpl["is_default"] == 1
+
+    def test_update_template_no_kwargs(self, db_path):
+        """不传 kwargs → 返回 False"""
+        tid = rs.create_template(name="NoChange")
+        ok = rs.update_template(tid)
+        assert ok is False
+        tpl = rs.get_template(tid)
+        assert tpl["name"] == "NoChange"
+
+    def test_update_template_invalid_kwargs(self, db_path):
+        """传无效字段 → 返回 False"""
+        tid = rs.create_template(name="Test")
+        ok = rs.update_template(tid, invalid_field="value")
+        assert ok is False
+
+    def test_get_template_not_found(self, db_path):
+        """不存在的 id → None"""
+        tpl = rs.get_template(99999)
+        assert tpl is None
+
+    def test_list_templates_empty(self, db_path):
+        """没有模板 → 空列表"""
+        templates = rs.list_templates()
+        assert templates == []
+
+    def test_delete_template_non_existent(self, db_path):
+        """删除不存在的模板 → False"""
+        ok = rs.delete_template(99999)
+        assert ok is False
+
+    def test_create_template_minimal(self, db_path):
+        """最小参数创建模板"""
+        tid = rs.create_template(name="Minimal")
+        tpl = rs.get_template(tid)
+        assert tpl is not None
+        assert tpl["name"] == "Minimal"
+        assert tpl["stop_process"] == ""
+        assert tpl["product_disposition"] == ""
+        assert tpl["notify_who"] == ""
+        assert tpl["recovery_condition"] == ""
+        assert tpl["is_default"] == 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # approval_service  (3)

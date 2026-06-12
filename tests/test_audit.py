@@ -267,3 +267,168 @@ class TestAuditEngine:
         # life_25: EP without verification freq → fail
         assert results[24]["result"] == "fail", f"Expected fail, got {results[24]['result']}"
         assert "缺失验证频次" in results[24]["detail"]
+
+    def test_audit_plan_not_found(self, db_path):
+        """不存在的 plan_id → ValueError"""
+        import re
+        with pytest.raises(ValueError, match=re.escape("plan_id=99999 not found")):
+            audit_control_plan(99999)
+
+    def test_audit_all_items_missing_fields(self, db_path, plan, step):
+        """所有控制项缺描述/规格/测量方法/样本量/频率 → 全部 fail"""
+        its.create_item(
+            step["id"], plan["id"],
+            # No char_description, specification, measurement_method,
+            # sample_size, sample_frequency
+            char_number="BAD-01",
+        )
+
+        results = audit_control_plan(plan["id"])
+
+        # col_07: missing char_description → fail
+        assert results[6]["result"] == "fail"
+        # col_08: missing specification → fail
+        assert results[7]["result"] == "fail"
+        # col_09: missing measurement_method → fail
+        assert results[8]["result"] == "fail"
+        # col_10: missing sample_size → fail
+        assert results[9]["result"] == "fail"
+        # col_11: missing sample_frequency → fail
+        assert results[10]["result"] == "fail"
+
+    def test_audit_empty_special_classification(self, db_path, plan, step):
+        """special_classification 为 NULL → spec_12 pass (NULL ≠ 空字符串)；
+        但 spec_14 会跳过（NULL 视为 none）"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="NULL-SPEC",
+            # special_classification not set (DB default is 'none', but
+            # the CHECK constraint prevents empty string anyway)
+            specification="10",
+            measurement_method="Gauge",
+            sample_size="1",
+            sample_frequency="每批",
+        )
+
+        results = audit_control_plan(plan["id"])
+        # spec_12: with default 'none' → pass since 'none' != ''
+        assert results[11]["result"] == "pass"
+
+    def test_audit_sc_item_low_frequency(self, db_path, plan, step):
+        """SC 项用低频率 -> spec_13 fail"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="SC-LOW",
+            special_classification="SC",
+            specification="10",
+            measurement_method="Gauge",
+            sample_size="5",
+            sample_frequency="每批",  # low frequency
+        )
+
+        results = audit_control_plan(plan["id"])
+        assert results[12]["result"] == "fail", f"Expected fail, got {results[12]['result']}"
+
+    def test_audit_cc_sc_without_measurement(self, db_path, plan, step):
+        """特殊特性项缺少测量方法 -> spec_14 fail"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="CC-NO-MEAS",
+            special_classification="CC",
+            specification="10",
+            # measurement_method missing
+            sample_size="5",
+            sample_frequency="1/hr",
+        )
+
+        results = audit_control_plan(plan["id"])
+        assert results[13]["result"] == "fail", f"Expected fail, got {results[13]['result']}"
+        assert "缺失测量方法" in results[13]["detail"]
+
+    def test_audit_cc_sc_recommended_method(self, db_path, plan, step):
+        """CC/SC 用 SPC/EP/MP -> spec_15 pass"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="CC-SPC",
+            special_classification="CC",
+            specification="10",
+            measurement_method="Caliper",
+            control_method_type="SPC",
+            sample_size="5",
+            sample_frequency="1/hr",
+        )
+
+        results = audit_control_plan(plan["id"])
+        assert results[14]["result"] == "pass", f"Expected pass, got {results[14]['result']}"
+
+    def test_audit_steps_bad_numbering(self, db_path, plan):
+        """步骤编号格式不合理 -> life_23 fail"""
+        conn = db.get_connection()
+        try:
+            cur = conn.execute(
+                "INSERT INTO process_steps (plan_id, step_number, step_name, sort_order) "
+                "VALUES (?, ?, ?, ?)",
+                (plan["id"], "bad-format", "Weird Step", 0),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        results = audit_control_plan(plan["id"])
+        assert results[22]["result"] == "fail", f"Expected fail, got {results[22]['result']}"
+
+    def test_audit_ep_with_verification(self, db_path, plan, step):
+        """EP 方法且有验证频次 -> life_25 pass"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="EP-OK",
+            control_method_type="EP",
+            ep_verification_freq="每班",
+            specification="10",
+            measurement_method="Gauge",
+            sample_size="3",
+            sample_frequency="每批",
+        )
+
+        results = audit_control_plan(plan["id"])
+        assert results[24]["result"] == "pass", f"Expected pass, got {results[24]['result']}"
+
+    def test_audit_reaction_no_stop_keyword(self, db_path, plan, step):
+        """反应计划不含停/续关键词 -> rp_17 warning"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="RP-NO-STOP",
+            specification="10",
+            measurement_method="Gauge",
+            sample_size="1",
+            sample_frequency="1/hr",
+            reaction_plan="通知主管处理",
+        )
+
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="RP-NO-STOP2",
+            specification="20",
+            measurement_method="Gauge",
+            sample_size="1",
+            sample_frequency="1/hr",
+            reaction_plan="重新检验",
+        )
+
+        results = audit_control_plan(plan["id"])
+        assert results[16]["result"] == "warning", f"Expected warning, got {results[16]['result']}"
+
+    def test_audit_rp_17_no_reaction_plan_at_all(self, db_path, plan, step):
+        """所有项都没有反应计划 -> rp_17 skip"""
+        its.create_item(
+            step["id"], plan["id"],
+            char_number="NO-RP",
+            specification="10",
+            # no reaction_plan
+        )
+
+        results = audit_control_plan(plan["id"])
+        # rp_16: missing reaction_plan -> fail
+        assert results[15]["result"] == "fail"
+        # rp_17: none have reaction_plan -> skip
+        assert results[16]["result"] == "skip"
