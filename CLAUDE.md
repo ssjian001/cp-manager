@@ -14,7 +14,7 @@ cd ~/Desktop/AI/xiangmu/cp-manager-py
 - 架构：控制计划三阶段(Prototype/Pre-Launch/Production) + Safe Launch + 25项审计
 - 主题：Catppuccin Latte/Mocha 双主题（styles/theme.py）
 - DB：10 张表，~/.cp-manager/cp-manager.db
-- 45 个单元测试（pytest）
+- 63 个单元测试（pytest）
 
 ## 项目结构
 ```
